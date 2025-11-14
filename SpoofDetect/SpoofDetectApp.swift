@@ -5,7 +5,7 @@ import SwiftUI
 struct SpoofDetectApp: App {
     var body: some Scene {
         WindowGroup {
-            SpoofScreen()
+            ContentView()
         }
     }
 }

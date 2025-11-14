@@ -1,9 +1,11 @@
 //
-//  SpoofDetect-Bridging-Header.h
+//  Engine-Bridging-Header.h
+//
+//  Bridging header for exposing C/C++ functions to Swift
 //
 
-#ifndef SpoofDetect_Bridging_Header_h
-#define SpoofDetect_Bridging_Header_h
+#ifndef Engine_Bridging_Header_h
+#define Engine_Bridging_Header_h
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <stdbool.h>
@@ -11,6 +13,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// MARK: - FaceBox Structure
 
 typedef struct {
     int left;
@@ -20,17 +24,20 @@ typedef struct {
     float confidence;
 } CFaceBox;
 
+// MARK: - ModelConfig Structure
+
 typedef struct {
     float scale;
     float shift_x;
     float shift_y;
-    int height;
     int width;
+    int height;
     const char* name;
     bool org_resize;
 } CModelConfig;
 
-// Face Detector
+// MARK: - Face Detector Functions
+
 void* engine_face_detector_allocate(void);
 void engine_face_detector_deallocate(void* handler);
 int engine_face_detector_load_model(void* handler);
@@ -52,7 +59,8 @@ CFaceBox* engine_face_detector_detect_yuv(
 
 void engine_face_detector_free_faces(CFaceBox* faces);
 
-// Live Engine
+// MARK: - Liveness Detection Functions
+
 void* engine_live_allocate(void);
 void engine_live_deallocate(void* handler);
 
@@ -78,4 +86,4 @@ float engine_live_detect_yuv(
 }
 #endif
 
-#endif /* SpoofDetect_Bridging_Header_h */
+#endif /* Engine_Bridging_Header_h */

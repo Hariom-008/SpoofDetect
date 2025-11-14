@@ -8,7 +8,7 @@
 
 /* Begin PBXFileReference section */
 		BF04808C2EC63DAC008CCDFD /* SpoofDetect.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SpoofDetect.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		BF7F73D92EC6433700D91BCB /* SpoofDetect-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "SpoofDetect-Bridging-Header.h"; sourceTree = "<group>"; };
+		BF5D2E372EC734F700BC1520 /* SpoofDetect-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "SpoofDetect-Bridging-Header.h"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -35,7 +35,7 @@
 			children = (
 				BF04808E2EC63DAC008CCDFD /* SpoofDetect */,
 				BF04808D2EC63DAC008CCDFD /* Products */,
-				BF7F73D92EC6433700D91BCB /* SpoofDetect-Bridging-Header.h */,
+				BF5D2E372EC734F700BC1520 /* SpoofDetect-Bridging-Header.h */,
 			);
 			sourceTree = "<group>";
 		};
@@ -267,7 +267,8 @@
 				"FRAMEWORK_SEARCH_PATHS[arch=*]" = "$(PROJECT_DIR)/SpoofDetect/Frameworks";
 				GENERATE_INFOPLIST_FILE = YES;
 				"HEADER_SEARCH_PATHS[arch=*]" = (
-					"$(PROJECT_DIR)/SpoofDetect/Frameworks/ncnn.framework/Headers\n$(PROJECT_DIR)/SpoofDetect/Frameworks/openmp.framework/Headers",
+					"$(PROJECT_DIR)/SpoofDetect/Frameworks/ncnn.framework/Versions/A/Headers/ncnn/**",
+					"$(PROJECT_DIR)/SpoofDetect/Frameworks/ncnn.framework/Versions/A/Headers/**",
 				);
 				INFOPLIST_KEY_NSCameraUsageDescription = "This app requires camera permission to proceed further.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -275,6 +276,7 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -283,6 +285,10 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/SpoofDetect/Live\\ +\\ Detection/jniLibs/arm64-v8a",
 					"$(PROJECT_DIR)/SpoofDetect/Live\\ +\\ Detection/jniLibs/armeabi-v7a",
+					"$(PROJECT_DIR)/SpoofDetect/Live\\ +\\ Detection\\ +\\ jni\\ +\\ cpp/jniLibs/arm64-v8a",
+					"$(PROJECT_DIR)/SpoofDetect/Live\\ +\\ Detection\\ +\\ jni\\ +\\ cpp/jniLibs/armeabi-v7a",
+					"$(PROJECT_DIR)/SpoofDetect/Live\\ +\\ Detection\\ +\\ jni\\ +\\ cpp/jniLibs/arm64-v8a",
+					"$(PROJECT_DIR)/SpoofDetect/Live\\ +\\ Detection\\ +\\ jni\\ +\\ cpp/jniLibs/armeabi-v7a",
 				);
 				MARKETING_VERSION = 1.0;
 				"OTHER_LDFLAGS[arch=*]" = "-lc++";
@@ -322,6 +328,7 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -330,6 +337,10 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/SpoofDetect/Live\\ +\\ Detection/jniLibs/arm64-v8a",
 					"$(PROJECT_DIR)/SpoofDetect/Live\\ +\\ Detection/jniLibs/armeabi-v7a",
+					"$(PROJECT_DIR)/SpoofDetect/Live\\ +\\ Detection\\ +\\ jni\\ +\\ cpp/jniLibs/arm64-v8a",
+					"$(PROJECT_DIR)/SpoofDetect/Live\\ +\\ Detection\\ +\\ jni\\ +\\ cpp/jniLibs/armeabi-v7a",
+					"$(PROJECT_DIR)/SpoofDetect/Live\\ +\\ Detection\\ +\\ jni\\ +\\ cpp/jniLibs/arm64-v8a",
+					"$(PROJECT_DIR)/SpoofDetect/Live\\ +\\ Detection\\ +\\ jni\\ +\\ cpp/jniLibs/armeabi-v7a",
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.KavionIntelligence.ML-iOS.SpoofDetect";
