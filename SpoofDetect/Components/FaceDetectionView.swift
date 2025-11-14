@@ -86,8 +86,8 @@ struct FaceBoxOverlay: View {
                 Rectangle()
                     .stroke(Color.green, lineWidth: 2)
                     .frame(
-                        width: CGFloat(face.width),
-                        height: CGFloat(face.height)
+                        maxWidth: .infinity,
+                        maxHeight:.infinity
                     )
                     .position(
                         x: CGFloat(face.center.x),

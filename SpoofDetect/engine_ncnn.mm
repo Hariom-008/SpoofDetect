@@ -284,16 +284,49 @@ void engine_face_detector_deallocate(void* handler) {
         // Expected format: each row contains [x1, y1, x2, y2, score, ...]
         NSLog(@"[NCNN] 📊 Output blob dimensions: w=%d h=%d c=%d", out.w, out.h, out.c);
         
+        // Log first few rows to understand the format
+        if (out.h > 0 && out.w >= 6) {
+            NSLog(@"[NCNN] 📊 First detection raw values: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+                  out.row(0)[0], out.row(0)[1], out.row(0)[2],
+                  out.row(0)[3], out.row(0)[4], out.row(0)[5]);
+        }
+        
         for (int i = 0; i < out.h; i++) {
             const float* row = out.row(i);
-            float score = row[4];
+            
+            // DetectionOutput layer format is typically: [class_id, confidence, x1, y1, x2, y2]
+            // But your previous code expected: [x1, y1, x2, y2, confidence]
+            // Let's check both formats
+            
+            float score, x1, y1, x2, y2;
+            
+            if (out.w >= 6) {
+                // Format: [class_id, confidence, x1, y1, x2, y2] (SSD format)
+                float class_id = row[0];
+                score = row[1];
+                x1 = row[2];
+                y1 = row[3];
+                x2 = row[4];
+                y2 = row[5];
+                
+                NSLog(@"[NCNN] Detection %d: class=%.0f score=%.3f box=[%.3f,%.3f,%.3f,%.3f]",
+                      i, class_id, score, x1, y1, x2, y2);
+            } else {
+                // Format: [x1, y1, x2, y2, confidence] (original format)
+                x1 = row[0];
+                y1 = row[1];
+                x2 = row[2];
+                y2 = row[3];
+                score = row[4];
+            }
+            
             if (score < det->scoreThresh) continue;
 
             CFaceBox fb;
-            fb.left   = row[0] * origW;
-            fb.top    = row[1] * origH;
-            fb.right  = row[2] * origW;
-            fb.bottom = row[3] * origH;
+            fb.left   = x1 * origW;
+            fb.top    = y1 * origH;
+            fb.right  = x2 * origW;
+            fb.bottom = y2 * origH;
             fb.confidence = score;
             results.push_back(fb);
             
@@ -433,111 +466,230 @@ int engine_live_load_model(
 }
 
 //------------------------------------------------------------------------------
-static float run_live_single(
-    ncnn::Net* net,
-    const LiveModelConfig& cfg,
-    const ncnn::Mat& faceRgb
-) {
-    ncnn::Mat in = ncnn::Mat::from_pixels_resize(
-        (unsigned char*)faceRgb.data,
-        ncnn::Mat::PIXEL_RGB,
-        faceRgb.w,
-        faceRgb.h,
-        cfg.width,
-        cfg.height
-    );
+    //------------------------------------------------------------------------------
+    // Force liveness model input to 80x80, extract from 'softmax' (Silent-Face style)
+    //------------------------------------------------------------------------------
 
-    const float mean_vals[3] = {127.5f, 127.5f, 127.5f};
-    const float norm_vals[3] = {1 / 128.f, 1 / 128.f, 1 / 128.f};
-    in.substract_mean_normalize(mean_vals, norm_vals);
-
-    ncnn::Extractor ex = net->create_extractor();
-    ex.set_light_mode(true);
-
-    int ret = ex.input("data", in);
-    if (ret != 0) {
-        NSLog(@"[NCNN] ❌ Liveness: failed to set input 'data' (ret=%d)", ret);
-        return 0.0f;
-    }
-
-    ncnn::Mat out;
-    ret = ex.extract("prob", out);
-    if (ret != 0) {
-        // Try alternative output names
-        ret = ex.extract("output", out);
-        if (ret != 0) {
-            ret = ex.extract("fc7", out);
+    static float run_live_single(
+        ncnn::Net* net,
+        const LiveModelConfig& cfg,
+        const ncnn::Mat& faceRgb
+    ) {
+        if (!net || faceRgb.empty()) {
+            NSLog(@"[NCNN] ❌ Liveness: net or faceRgb is null/empty");
+            return 0.0f;
         }
+
+        int srcW = faceRgb.w;
+        int srcH = faceRgb.h;
+
+        if (srcW <= 0 || srcH <= 0) {
+            NSLog(@"[NCNN] ❌ Liveness: invalid source face size %dx%d", srcW, srcH);
+            return 0.0f;
+        }
+
+        // MiniFASNet / Silent-Face expect 80x80 input
+        const int MODEL_W = 80;
+        const int MODEL_H = 80;
+
+        NSLog(@"[NCNN] ▶️ Liveness input crop size: %dx%d, resizing to %dx%d",
+              srcW, srcH, MODEL_W, MODEL_H);
+
+        // Resize face crop to 80x80
+        ncnn::Mat in = ncnn::Mat::from_pixels_resize(
+            (const unsigned char*)faceRgb.data,
+            ncnn::Mat::PIXEL_RGB,
+            srcW,
+            srcH,
+            MODEL_W,
+            MODEL_H
+        );
+
+        // Normalization: (x - 127.5) / 128.0
+        const float mean_vals[3] = {127.5f, 127.5f, 127.5f};
+        const float norm_vals[3] = {1 / 128.f, 1 / 128.f, 1 / 128.f};
+        in.substract_mean_normalize(mean_vals, norm_vals);
+
+        ncnn::Extractor ex = net->create_extractor();
+        ex.set_light_mode(true);
+
+        // Input blob is usually "data"
+        int ret = ex.input("data", in);
         if (ret != 0) {
+            NSLog(@"[NCNN] ❌ Liveness: failed to set input 'data' (ret=%d)", ret);
+            return 0.0f;
+        }
+
+        ncnn::Mat out;
+        const char* usedName = nullptr;
+
+        // Try known output names, including "softmax" (your log literally suggested this)
+        const char* outputNames[] = {"prob", "softmax", "output", "fc7"};
+        for (const char* name : outputNames) {
+            ret = ex.extract(name, out);
+            if (ret == 0) {
+                usedName = name;
+                break;
+            }
+        }
+
+        if (ret != 0 || out.empty()) {
             NSLog(@"[NCNN] ❌ Liveness: failed to extract output blob (ret=%d)", ret);
             return 0.0f;
         }
+
+        NSLog(@"[NCNN] ✅ Liveness output blob '%s' dims: w=%d h=%d c=%d",
+              usedName, out.w, out.h, out.c);
+
+        int len = out.w * out.h * out.c;
+        if (len <= 0) {
+            NSLog(@"[NCNN] ⚠️ Liveness: output length is 0");
+            return 0.0f;
+        }
+
+        // Flattened access (ncnn::Mat::operator[])
+        float real_score = 0.0f;
+
+        if (len >= 3) {
+            float s0 = out[0];
+            float s1 = out[1]; // Silent-Face: index 1 is "real"
+            float s2 = out[2];
+
+            NSLog(@"[NCNN] 🔴 %s output (softmax style): [c0=%.3f, c1=%.3f, c2=%.3f]",
+                  cfg.name.c_str(), s0, s1, s2);
+
+            real_score = s1;
+        } else if (len == 2) {
+            float s0 = out[0];
+            float s1 = out[1];
+            // Common pattern: [fake, real]
+            NSLog(@"[NCNN] 🔴 %s output (2-class): [fake=%.3f, real=%.3f]",
+                  cfg.name.c_str(), s0, s1);
+            real_score = s1;
+        } else { // len == 1
+            float spoof_prob = out[0];
+            real_score = 1.0f - spoof_prob;
+            NSLog(@"[NCNN] 🔴 %s output (1 value): spoof=%.3f -> real=%.3f",
+                  cfg.name.c_str(), spoof_prob, real_score);
+        }
+
+        return real_score;
     }
 
-    if (out.w >= 1) {
-        float score = out[0];
-        NSLog(@"[NCNN] 🔴 Liveness score from %s: %.3f", cfg.name.c_str(), score);
-        return score;
-    }
-    
-    NSLog(@"[NCNN] ⚠️ Liveness: output blob is empty");
-    return 0.0f;
-}
 //------------------------------------------------------------------------------
 
-float engine_live_detect_yuv(
-    void* handler,
-    const void* rgba,
-    int width,
-    int height,
-    int orientation,
-    int left,
-    int top,
-    int right,
-    int bottom
-) {
-    if (!handler || !rgba) {
-        NSLog(@"[NCNN] ❌ Liveness: null handler or rgba");
-        return 0.0f;
+    float engine_live_detect_yuv(
+        void* handler,
+        const void* rgba,
+        int width,
+        int height,
+        int orientation,
+        int left,
+        int top,
+        int right,
+        int bottom
+    ) {
+        if (!handler || !rgba) {
+            NSLog(@"[NCNN] ❌ Liveness: null handler or rgba");
+            return 0.0f;
+        }
+        auto *live = static_cast<NcnnLiveEngine*>(handler);
+
+        // Full frame in RGB (interleaved)
+        ncnn::Mat frame = yuv420sp_to_ncnn_rgb(rgba, width, height, width, height);
+        if (frame.empty()) {
+            NSLog(@"[NCNN] ❌ Liveness: failed to convert frame to RGB");
+            return 0.0f;
+        }
+
+        int face_w = right - left;
+        int face_h = bottom - top;
+        
+        if (face_w <= 0 || face_h <= 0) {
+            NSLog(@"[NCNN] ❌ Liveness: invalid face box w=%d h=%d", face_w, face_h);
+            return 0.0f;
+        }
+
+        NSLog(@"[NCNN] 🔍 Original face box: [%d,%d,%d,%d] size=%dx%d (frame %dx%d)",
+              left, top, right, bottom, face_w, face_h, width, height);
+
+        if (live->nets.empty()) {
+            NSLog(@"[NCNN] ❌ No liveness models loaded");
+            return 0.0f;
+        }
+
+        NSLog(@"[NCNN] Running %zu liveness models...", live->nets.size());
+        float sum = 0.f;
+        int valid_models = 0;
+        
+        for (int i = 0; i < (int)live->nets.size(); i++) {
+            const LiveModelConfig& cfg = live->configs[i];
+
+            int face_center_x = left + face_w / 2;
+            int face_center_y = top + face_h / 2;
+            
+            int expanded_w = (int)(face_w * cfg.scale);
+            int expanded_h = (int)(face_h * cfg.scale);
+            
+            int shift_x_pixels = (int)(face_w * cfg.shift_x);
+            int shift_y_pixels = (int)(face_h * cfg.shift_y);
+            
+            int crop_left   = face_center_x - expanded_w / 2 + shift_x_pixels;
+            int crop_top    = face_center_y - expanded_h / 2 + shift_y_pixels;
+            int crop_right  = crop_left + expanded_w;
+            int crop_bottom = crop_top + expanded_h;
+            
+            crop_left   = std::max(0, crop_left);
+            crop_top    = std::max(0, crop_top);
+            crop_right  = std::min(width,  crop_right);
+            crop_bottom = std::min(height, crop_bottom);
+            
+            int crop_w = crop_right - crop_left;
+            int crop_h = crop_bottom - crop_top;
+            
+            if (crop_w <= 0 || crop_h <= 0) {
+                NSLog(@"[NCNN] ⚠️ Model %s: invalid crop after scaling",
+                      cfg.name.c_str());
+                continue;
+            }
+            
+            NSLog(@"[NCNN] 📐 Model %s (scale=%.2f, shift=(%.2f,%.2f)): crop [%d,%d,%d,%d] size=%dx%d",
+                  cfg.name.c_str(), cfg.scale, cfg.shift_x, cfg.shift_y,
+                  crop_left, crop_top, crop_right, crop_bottom, crop_w, crop_h);
+
+            // Extract face crop from the full frame (interleaved RGB)
+            ncnn::Mat faceRgb(crop_w, crop_h, 3);
+            for (int y = 0; y < crop_h; y++) {
+                const unsigned char* src =
+                    (const unsigned char*)frame.channel(0) + (crop_top + y) * width * 3 + crop_left * 3;
+                unsigned char* dst =
+                    (unsigned char*)faceRgb.channel(0) + y * crop_w * 3;
+                memcpy(dst, src, crop_w * 3);
+            }
+
+            // Run single-model liveness with forced 80x80 resize
+            float score = run_live_single(live->nets[i], cfg, faceRgb);
+            NSLog(@"[NCNN] ✅ Model %s liveness score: %.3f",
+                  cfg.name.c_str(), score);
+
+            sum += score;
+            valid_models++;
+        }
+
+        if (valid_models == 0) {
+            NSLog(@"[NCNN] ❌ No valid liveness models processed");
+            return 0.0f;
+        }
+
+        float avgScore = sum / valid_models;
+        NSLog(@"[NCNN] 🎯 Final liveness score: %.3f (avg of %d models)",
+              avgScore, valid_models);
+        NSLog(@"[NCNN] 💡 Interpretation: %.3f = %s",
+              avgScore,
+              avgScore > 0.5f ? "REAL FACE ✅" : "FAKE/SPOOF ❌");
+
+        return avgScore;
     }
-    auto *live = static_cast<NcnnLiveEngine*>(handler);
 
-    ncnn::Mat frame = yuv420sp_to_ncnn_rgb(rgba, width, height, width, height);
-
-    int w = std::max(0, right - left);
-    int h = std::max(0, bottom - top);
-    if (w <= 0 || h <= 0) {
-        NSLog(@"[NCNN] ❌ Liveness: invalid face box dimensions w=%d h=%d", w, h);
-        return 0.0f;
-    }
-
-    left   = std::max(0, left);
-    top    = std::max(0, top);
-    right  = std::min(width,  right);
-    bottom = std::min(height, bottom);
-    
-    NSLog(@"[NCNN] 🔍 Liveness: cropping face [%d,%d,%d,%d] from frame %dx%d",
-          left, top, right, bottom, width, height);
-
-    ncnn::Mat faceRgb(w, h, 3);
-    for (int y = 0; y < h; y++) {
-        const unsigned char* src =
-            (const unsigned char*)frame.channel(0) + (top + y) * width * 3 + left * 3;
-        unsigned char* dst =
-            (unsigned char*)faceRgb.channel(0) + y * w * 3;
-
-        memcpy(dst, src, w * 3);
-    }
-
-    NSLog(@"[NCNN] Running %zu liveness models...", live->nets.size());
-    float sum = 0.f;
-    for (int i = 0; i < live->nets.size(); i++) {
-        sum += run_live_single(live->nets[i], live->configs[i], faceRgb);
-    }
-
-    float avgScore = sum / std::max(1, (int)live->nets.size());
-    NSLog(@"[NCNN] 🎯 Final liveness score: %.3f (avg of %zu models)", avgScore, live->nets.size());
-    return avgScore;
-}
 
 } // extern "C"
