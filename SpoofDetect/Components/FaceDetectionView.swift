@@ -1,9 +1,5 @@
-//
-//  FaceDetectionView.swift
-//  SpoofDetect
-//
-//  Created by Hari's Mac on 14.11.2025.
-//
+// File: FaceDetectionView.swift
+// SpoofDetect
 
 import Foundation
 import SwiftUI
@@ -17,21 +13,12 @@ struct FaceDetectionView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 20) {
-                // Camera preview or selected image
+                // Camera preview
                 ZStack {
-                    if let image = viewModel.selectedImage {
-                        Image(uiImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .overlay(
-                                FaceBoxOverlay(faces: viewModel.detectedFaces)
-                            )
-                    } else {
-                        CameraPreviewView(viewModel: viewModel)
-                            .overlay(
-                                FaceBoxOverlay(faces: viewModel.detectedFaces)
-                            )
-                    }
+                    CameraPreviewView(viewModel: viewModel)
+                        .overlay(
+                            FaceBoxOverlay(faces: viewModel.detectedFaces)
+                        )
                 }
                 .frame(maxHeight: 500)
                 .background(Color.black)
@@ -67,23 +54,8 @@ struct FaceDetectionView: View {
                 .background(Color.gray.opacity(0.1))
                 .cornerRadius(8)
                 
-                // Action buttons
-                HStack(spacing: 16) {
-                    Button(action: viewModel.selectImage) {
-                        Label("Choose Photo", systemImage: "photo")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    
-                    Button(action: viewModel.capturePhoto) {
-                        Label("Capture", systemImage: "camera")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                
-                if viewModel.isProcessing {
-                    ProgressView("Processing...")
+                if viewModel.isProcessingModels {
+                    ProgressView("Loading models...")
                 }
                 
                 if let error = viewModel.errorMessage {
@@ -110,7 +82,7 @@ struct FaceBoxOverlay: View {
     
     var body: some View {
         GeometryReader { geometry in
-            ForEach(Array(faces.enumerated()), id: \.offset) { index, face in
+            ForEach(Array(faces.enumerated()), id: \.offset) { _, face in
                 Rectangle()
                     .stroke(Color.green, lineWidth: 2)
                     .frame(
@@ -149,12 +121,18 @@ struct CameraPreviewView: UIViewRepresentable {
         return view
     }
     
-    func updateUIView(_ uiView: CameraPreviewUIView, context: Context) {}
+    func updateUIView(_ uiView: CameraPreviewUIView, context: Context) {
+        // Nothing to update for now
+    }
 }
 
 class CameraPreviewUIView: UIView {
     weak var delegate: CameraPreviewDelegate?
+    
+    private let session = AVCaptureSession()
     private var previewLayer: AVCaptureVideoPreviewLayer?
+    private let videoOutput = AVCaptureVideoDataOutput()
+    private let videoQueue = DispatchQueue(label: "CameraVideoOutputQueue")
     
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -162,12 +140,59 @@ class CameraPreviewUIView: UIView {
     }
     
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        super.init(coder: coder)
+        setupCamera()
     }
     
     private func setupCamera() {
-        // Camera setup would go here
         backgroundColor = .black
+        
+        session.beginConfiguration()
+        session.sessionPreset = .vga640x480
+        
+        // Front camera
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera,
+                                                   for: .video,
+                                                   position: .front) else {
+            print("⚠️ No front camera found")
+            session.commitConfiguration()
+            return
+        }
+        
+        do {
+            let input = try AVCaptureDeviceInput(device: device)
+            if session.canAddInput(input) {
+                session.addInput(input)
+            }
+            
+            // 32BGRA from camera
+            videoOutput.videoSettings = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+            ]
+            videoOutput.alwaysDiscardsLateVideoFrames = true
+            videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
+            
+            if session.canAddOutput(videoOutput) {
+                session.addOutput(videoOutput)
+            }
+            
+            if let connection = videoOutput.connection(with: .video) {
+                connection.videoOrientation = .portrait
+                // Do NOT mirror for now, so boxes line up
+                connection.isVideoMirrored = false
+            }
+            
+            let previewLayer = AVCaptureVideoPreviewLayer(session: session)
+            previewLayer.videoGravity = .resizeAspectFill
+            layer.addSublayer(previewLayer)
+            self.previewLayer = previewLayer
+            
+            session.commitConfiguration()
+            session.startRunning()
+        } catch {
+            print("⚠️ Camera setup error: \(error)")
+            session.commitConfiguration()
+        }
     }
     
     override func layoutSubviews() {
@@ -176,6 +201,17 @@ class CameraPreviewUIView: UIView {
     }
 }
 
+extension CameraPreviewUIView: AVCaptureVideoDataOutputSampleBufferDelegate {
+    func captureOutput(_ output: AVCaptureOutput,
+                       didOutput sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+        guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        delegate?.didCapture(imageBuffer: buffer)
+    }
+}
+
+// MARK: - Camera Preview Delegate
+
 protocol CameraPreviewDelegate: AnyObject {
     func didCapture(imageBuffer: CVImageBuffer)
 }
@@ -183,14 +219,17 @@ protocol CameraPreviewDelegate: AnyObject {
 // MARK: - View Model
 
 class FaceDetectionViewModel: ObservableObject, CameraPreviewDelegate {
-    @Published var selectedImage: UIImage?
     @Published var detectedFaces: [FaceBox] = []
     @Published var livenessScore: Float?
-    @Published var isProcessing = false
+    @Published var isProcessingModels = false
     @Published var errorMessage: String?
     
     private var faceDetector: FaceDetector?
     private var liveness: Live?
+    
+    private let processingQueue = DispatchQueue(label: "FaceDetectionProcessingQueue")
+    private var isProcessingFrame = false
+    private var modelsLoaded = false
     
     init() {
         faceDetector = FaceDetector()
@@ -198,71 +237,137 @@ class FaceDetectionViewModel: ObservableObject, CameraPreviewDelegate {
     }
     
     func loadModels() {
-        isProcessing = true
+        isProcessingModels = true
         errorMessage = nil
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             
-            // Load face detector model
             let faceResult = self.faceDetector?.loadModel() ?? -1
             if faceResult != 0 {
                 DispatchQueue.main.async {
                     self.errorMessage = "Failed to load face detection model"
-                    self.isProcessing = false
+                    self.isProcessingModels = false
                 }
                 return
             }
             
-            // Load liveness model
             let liveResult = self.liveness?.loadModel() ?? -1
             if liveResult != 0 {
                 DispatchQueue.main.async {
                     self.errorMessage = "Failed to load liveness model"
-                    self.isProcessing = false
+                    self.isProcessingModels = false
                 }
                 return
             }
             
             DispatchQueue.main.async {
-                self.isProcessing = false
+                self.modelsLoaded = true
+                self.isProcessingModels = false
             }
         }
     }
     
-    func selectImage() {
-        // Image picker implementation
-    }
-    
-    func capturePhoto() {
-        // Capture implementation
-    }
-    
-    func detectFaces(in image: UIImage) {
-        isProcessing = true
-        errorMessage = nil
+    // Camera frame callback
+    func didCapture(imageBuffer: CVImageBuffer) {
+        // Don’t fry the device
+        if isProcessingFrame || !modelsLoaded {
+            return
+        }
+        isProcessingFrame = true
         
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        let width = CVPixelBufferGetWidth(imageBuffer)
+        let height = CVPixelBufferGetHeight(imageBuffer)
+        
+        guard let rgbaData = Self.makeRGBAData(from: imageBuffer) else {
+            isProcessingFrame = false
+            return
+        }
+        
+        let orientation = 0 // engine ignores this currently
+        
+        processingQueue.async { [weak self] in
             guard let self = self else { return }
             
             do {
-                let faces = try self.faceDetector?.detect(image: image) ?? []
+                let faces = try self.faceDetector?.detect(
+                    yuv: rgbaData,
+                    width: width,
+                    height: height,
+                    orientation: orientation
+                ) ?? []
+                
+                var liveScore: Float? = nil
+                if let firstFace = faces.first {
+                    liveScore = try? self.liveness?.detect(
+                        yuv: rgbaData,
+                        width: width,
+                        height: height,
+                        orientation: orientation,
+                        faceBox: firstFace
+                    )
+                }
                 
                 DispatchQueue.main.async {
                     self.detectedFaces = faces
-                    self.isProcessing = false
+                    if let score = liveScore {
+                        self.livenessScore = score
+                        print("🔍 Liveness score: \(score)")
+                    }
+                    self.isProcessingFrame = false
                 }
             } catch {
                 DispatchQueue.main.async {
                     self.errorMessage = error.localizedDescription
-                    self.isProcessing = false
+                    self.isProcessingFrame = false
                 }
             }
         }
     }
     
-    func didCapture(imageBuffer: CVImageBuffer) {
-        // Handle camera frame capture
+    // Convert 32BGRA from camera → contiguous RGBA buffer (what engine_ncnn.mm expects)
+    private static func makeRGBAData(from imageBuffer: CVImageBuffer) -> Data? {
+        CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly) }
+        
+        guard let baseAddress = CVPixelBufferGetBaseAddress(imageBuffer) else {
+            return nil
+        }
+        
+        let width = CVPixelBufferGetWidth(imageBuffer)
+        let height = CVPixelBufferGetHeight(imageBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer)
+        
+        let srcPtr = baseAddress.bindMemory(to: UInt8.self, capacity: bytesPerRow * height)
+        
+        var rgba = Data(count: width * height * 4)
+        rgba.withUnsafeMutableBytes { destRaw in
+            guard let dstBase = destRaw.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                return
+            }
+            
+            for y in 0..<height {
+                let srcRow = srcPtr.advanced(by: y * bytesPerRow)
+                let dstRow = dstBase.advanced(by: y * width * 4)
+                
+                for x in 0..<width {
+                    let srcPixel = srcRow.advanced(by: x * 4) // BGRA
+                    let dstPixel = dstRow.advanced(by: x * 4) // RGBA
+                    
+                    let b = srcPixel[0]
+                    let g = srcPixel[1]
+                    let r = srcPixel[2]
+                    let a = srcPixel[3]
+                    
+                    dstPixel[0] = r
+                    dstPixel[1] = g
+                    dstPixel[2] = b
+                    dstPixel[3] = a
+                }
+            }
+        }
+        
+        return rgba
     }
 }
 

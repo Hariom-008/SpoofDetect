@@ -56,15 +56,19 @@ struct NcnnLiveEngine {
 //----------------------------------------------------------
 // HELPERS
 //----------------------------------------------------------
+    
+    static NSString* bundleFile(NSString *relativePath) {
+        NSString *base = [[NSBundle mainBundle] resourcePath];
+        NSString *full = [base stringByAppendingPathComponent:relativePath];
 
-static NSString* bundlePath(NSString *name, NSString *ext, NSString *subdir = nil) {
-    NSBundle *bundle = [NSBundle mainBundle];
-    if (subdir) {
-        return [bundle pathForResource:name ofType:ext inDirectory:subdir];
-    } else {
-        return [bundle pathForResource:name ofType:ext];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:full]) {
+            NSLog(@"[NCNN] bundleFile: missing %@", full);
+            return nil;
+        }
+        return full;
     }
-}
+
+
 
 static ncnn::Mat cgimage_to_ncnn_rgb(CGImageRef image,
                                      int targetW,
@@ -183,63 +187,130 @@ void engine_face_detector_deallocate(void* handler) {
     delete det;
 }
 
-int engine_face_detector_load_model(void* handler) {
-    if (!handler) return -1;
-    auto *det = static_cast<NcnnFaceDetector*>(handler);
+    int engine_face_detector_load_model(void* handler) {
+        if (!handler) return -1;
+        auto *det = static_cast<NcnnFaceDetector*>(handler);
 
-    det->net.opt.num_threads = 2;
-    det->net.opt.use_vulkan_compute = false;
+        det->net.opt.num_threads = 2;
+        det->net.opt.use_vulkan_compute = false;
 
-    NSString *paramPath = bundlePath(@"detection", @"param", @"detection");
-    NSString *binPath   = bundlePath(@"detection", @"bin",   @"detection");
+        // Files are at bundle root:
+        // SpoofDetect.app/detection.param
+        // SpoofDetect.app/detection.bin
+        NSString *paramPath = bundleFile(@"detection.param");
+        NSString *binPath   = bundleFile(@"detection.bin");
 
-    if (!paramPath || !binPath) return -1;
+        NSLog(@"[NCNN] detection paramPath = %@", paramPath);
+        NSLog(@"[NCNN] detection binPath   = %@", binPath);
 
-    int ret = det->net.load_param(paramPath.UTF8String);
-    if (ret != 0) return ret;
+        if (!paramPath || !binPath) return -1;
 
-    ret = det->net.load_model(binPath.UTF8String);
-    return ret;
-}
+        int ret = det->net.load_param(paramPath.UTF8String);
+        NSLog(@"[NCNN] load_param ret = %d", ret);
+        if (ret != 0) return ret;
 
-static std::vector<CFaceBox> run_detector(NcnnFaceDetector* det,
-                                          const ncnn::Mat& in,
-                                          int origW,
-                                          int origH)
-{
-    std::vector<CFaceBox> results;
-
-    ncnn::Extractor ex = det->net.create_extractor();
-    ex.set_light_mode(true);
-    // no ex.set_num_threads()
-
-    int ret = ex.input("input", in);
-    if (ret != 0) return results;
-
-    ncnn::Mat out;
-    ret = ex.extract("output", out);
-    if (ret != 0) return results;
-
-    for (int i = 0; i < out.h; i++) {
-        const float* row = out.row(i);
-        float score = row[4];
-        if (score < det->scoreThresh) continue;
-
-        CFaceBox fb;
-        fb.left   = row[0] * origW;
-        fb.top    = row[1] * origH;
-        fb.right  = row[2] * origW;
-        fb.bottom = row[3] * origH;
-        fb.confidence = score;
-        results.push_back(fb);
+        ret = det->net.load_model(binPath.UTF8String);
+        NSLog(@"[NCNN] load_model ret = %d", ret);
+        return ret;
     }
 
-    auto keep = nms(results, det->nmsThresh);
-    std::vector<CFaceBox> finalBoxes;
-    for (int idx : keep) finalBoxes.push_back(results[idx]);
 
-    return finalBoxes;
-}
+
+
+    static std::vector<CFaceBox> run_detector(NcnnFaceDetector* det,
+                                              const ncnn::Mat& in,
+                                              int origW,
+                                              int origH)
+    {
+        std::vector<CFaceBox> results;
+
+        ncnn::Extractor ex = det->net.create_extractor();
+        ex.set_light_mode(true);
+
+        int ret = 0;
+
+        // Debug: Print available layer names
+        NSLog(@"[NCNN] 🔍 Detector model layers:");
+        const std::vector<ncnn::Blob>& blobs = det->net.blobs();
+        for (size_t i = 0; i < blobs.size(); i++) {
+            NSLog(@"[NCNN]   Layer %zu: %s", i, blobs[i].name.c_str());
+        }
+
+        // Try common input blob names
+        ret = ex.input("data", in);
+        if (ret != 0) {
+            NSLog(@"[NCNN] 'data' input failed, trying 'input'");
+            ret = ex.input("input", in);
+        }
+        if (ret != 0) {
+            NSLog(@"[NCNN] 'input' failed, trying 'in0'");
+            ret = ex.input("in0", in);
+        }
+        if (ret != 0) {
+            NSLog(@"[NCNN] ❌ detector: failed to set input blob (ret=%d)", ret);
+            return results;
+        }
+        NSLog(@"[NCNN] ✅ Input blob set successfully");
+
+        // Try common output blob names
+        ncnn::Mat out;
+        const char* outputNames[] = {
+            "output", "prob", "detection_out", "scores", "out0",
+            "conv6_2_mbox_conf", "detection_output", "fc7", "conf",
+            "loc", "mbox_conf", "mbox_loc"
+        };
+        
+        bool extracted = false;
+        const char* successName = nullptr;
+        
+        for (const char* name : outputNames) {
+            ret = ex.extract(name, out);
+            if (ret == 0) {
+                NSLog(@"[NCNN] ✅ Successfully extracted output blob: %s (dims: w=%d h=%d c=%d)",
+                      name, out.w, out.h, out.c);
+                extracted = true;
+                successName = name;
+                break;
+            }
+        }
+        
+        if (!extracted) {
+            NSLog(@"[NCNN] ❌ detector: failed to extract output blob with any known name");
+            NSLog(@"[NCNN] 💡 Check the detection.param file to see the actual layer names");
+            return results;
+        }
+
+        // Parse detection results
+        // Expected format: each row contains [x1, y1, x2, y2, score, ...]
+        NSLog(@"[NCNN] 📊 Output blob dimensions: w=%d h=%d c=%d", out.w, out.h, out.c);
+        
+        for (int i = 0; i < out.h; i++) {
+            const float* row = out.row(i);
+            float score = row[4];
+            if (score < det->scoreThresh) continue;
+
+            CFaceBox fb;
+            fb.left   = row[0] * origW;
+            fb.top    = row[1] * origH;
+            fb.right  = row[2] * origW;
+            fb.bottom = row[3] * origH;
+            fb.confidence = score;
+            results.push_back(fb);
+            
+            NSLog(@"[NCNN] 👤 Face detected: score=%.2f box=[%.0f,%.0f,%.0f,%.0f]",
+                  score, fb.left, fb.top, fb.right, fb.bottom);
+        }
+
+        NSLog(@"[NCNN] 🎯 Total faces before NMS: %zu", results.size());
+        auto keep = nms(results, det->nmsThresh);
+        std::vector<CFaceBox> finalBoxes;
+        for (int idx : keep) finalBoxes.push_back(results[idx]);
+        NSLog(@"[NCNN] 🎯 Total faces after NMS: %zu", finalBoxes.size());
+
+        return finalBoxes;
+    }
+
+
 
 CFaceBox* engine_face_detector_detect_image(
     void* handler,
@@ -333,9 +404,15 @@ int engine_live_load_model(
         net->opt.num_threads = 2;
         net->opt.use_vulkan_compute = false;
 
-        NSString* base = [NSString stringWithUTF8String:cfg.name.c_str()];
-        NSString* paramPath = bundlePath(base, @"param", @"live");
-        NSString* binPath   = bundlePath(base, @"bin",   @"live");
+        NSString* baseName = [NSString stringWithUTF8String:cfg.name.c_str()];
+
+        // Files are at bundle root:
+        // SpoofDetect.app/model_1.param, model_1.bin, etc.
+        NSString* paramPath = bundleFile([NSString stringWithFormat:@"%@.param", baseName]);
+        NSString* binPath   = bundleFile([NSString stringWithFormat:@"%@.bin",   baseName]);
+
+        NSLog(@"[NCNN] live paramPath = %@", paramPath);
+        NSLog(@"[NCNN] live binPath   = %@", binPath);
 
         if (!paramPath || !binPath) {
             delete net;
@@ -350,6 +427,7 @@ int engine_live_load_model(
 
         live->nets.push_back(net);
     }
+
 
     return 0;
 }
@@ -376,12 +454,33 @@ static float run_live_single(
     ncnn::Extractor ex = net->create_extractor();
     ex.set_light_mode(true);
 
-    ex.input("data", in);
+    int ret = ex.input("data", in);
+    if (ret != 0) {
+        NSLog(@"[NCNN] ❌ Liveness: failed to set input 'data' (ret=%d)", ret);
+        return 0.0f;
+    }
 
     ncnn::Mat out;
-    ex.extract("prob", out);
+    ret = ex.extract("prob", out);
+    if (ret != 0) {
+        // Try alternative output names
+        ret = ex.extract("output", out);
+        if (ret != 0) {
+            ret = ex.extract("fc7", out);
+        }
+        if (ret != 0) {
+            NSLog(@"[NCNN] ❌ Liveness: failed to extract output blob (ret=%d)", ret);
+            return 0.0f;
+        }
+    }
 
-    if (out.w >= 1) return out[0];
+    if (out.w >= 1) {
+        float score = out[0];
+        NSLog(@"[NCNN] 🔴 Liveness score from %s: %.3f", cfg.name.c_str(), score);
+        return score;
+    }
+    
+    NSLog(@"[NCNN] ⚠️ Liveness: output blob is empty");
     return 0.0f;
 }
 //------------------------------------------------------------------------------
@@ -397,19 +496,28 @@ float engine_live_detect_yuv(
     int right,
     int bottom
 ) {
-    if (!handler || !rgba) return 0.0f;
+    if (!handler || !rgba) {
+        NSLog(@"[NCNN] ❌ Liveness: null handler or rgba");
+        return 0.0f;
+    }
     auto *live = static_cast<NcnnLiveEngine*>(handler);
 
     ncnn::Mat frame = yuv420sp_to_ncnn_rgb(rgba, width, height, width, height);
 
     int w = std::max(0, right - left);
     int h = std::max(0, bottom - top);
-    if (w <= 0 || h <= 0) return 0.0f;
+    if (w <= 0 || h <= 0) {
+        NSLog(@"[NCNN] ❌ Liveness: invalid face box dimensions w=%d h=%d", w, h);
+        return 0.0f;
+    }
 
     left   = std::max(0, left);
     top    = std::max(0, top);
     right  = std::min(width,  right);
     bottom = std::min(height, bottom);
+    
+    NSLog(@"[NCNN] 🔍 Liveness: cropping face [%d,%d,%d,%d] from frame %dx%d",
+          left, top, right, bottom, width, height);
 
     ncnn::Mat faceRgb(w, h, 3);
     for (int y = 0; y < h; y++) {
@@ -421,12 +529,15 @@ float engine_live_detect_yuv(
         memcpy(dst, src, w * 3);
     }
 
+    NSLog(@"[NCNN] Running %zu liveness models...", live->nets.size());
     float sum = 0.f;
     for (int i = 0; i < live->nets.size(); i++) {
         sum += run_live_single(live->nets[i], live->configs[i], faceRgb);
     }
 
-    return sum / std::max(1, (int)live->nets.size());
+    float avgScore = sum / std::max(1, (int)live->nets.size());
+    NSLog(@"[NCNN] 🎯 Final liveness score: %.3f (avg of %zu models)", avgScore, live->nets.size());
+    return avgScore;
 }
 
 } // extern "C"

@@ -1,6 +1,7 @@
+// File: FaceDetector.swift
+
 import Foundation
 import UIKit
-
 
 class FaceDetector: Component {
     private var nativeHandler: UnsafeMutableRawPointer?
@@ -32,7 +33,8 @@ class FaceDetector: Component {
     }
     
     func detect(yuv: Data, width: Int, height: Int, orientation: Int) throws -> [FaceBox] {
-        let expectedSize = width * height * 3 / 2
+        // Actually RGBA: width * height * 4
+        let expectedSize = width * height * 4
         guard yuv.count == expectedSize else {
             throw FaceDetectorError.invalidYUVData
         }
@@ -43,7 +45,13 @@ class FaceDetector: Component {
         
         return yuv.withUnsafeBytes { bytes in
             guard let baseAddress = bytes.baseAddress else { return [] }
-            return nativeDetectYUV(handler, baseAddress, Int32(width), Int32(height), Int32(orientation))
+            return nativeDetectYUV(
+                handler,
+                baseAddress,
+                Int32(width),
+                Int32(height),
+                Int32(orientation)
+            )
         }
     }
     
@@ -54,29 +62,21 @@ class FaceDetector: Component {
         }
     }
     
-//    deinit {
-//        destroy()
-//    }
-    
-    // MARK: - Native Methods (to be implemented in C/C++)
+    // MARK: - Native Methods
     
     private func allocate() -> UnsafeMutableRawPointer? {
-        // Call native C/C++ function
         return engine_face_detector_allocate()
     }
     
     private func deallocate(_ handler: UnsafeMutableRawPointer) {
-        // Call native C/C++ function
         engine_face_detector_deallocate(handler)
     }
     
     private func nativeLoadModel(_ handler: UnsafeMutableRawPointer) -> Int32 {
-        // Call native C/C++ function
         return engine_face_detector_load_model(handler)
     }
     
     private func nativeDetectImage(_ handler: UnsafeMutableRawPointer, _ image: CGImage) -> [FaceBox] {
-        // Call native C/C++ function and convert results
         var faceCount: Int32 = 0
         let facesPtr = engine_face_detector_detect_image(handler, image, &faceCount)
         
@@ -95,9 +95,7 @@ class FaceDetector: Component {
             result.append(faceBox)
         }
         
-        // Free the native memory
         engine_face_detector_free_faces(facesPtr)
-        
         return result
     }
     
@@ -108,7 +106,6 @@ class FaceDetector: Component {
         _ height: Int32,
         _ orientation: Int32
     ) -> [FaceBox] {
-        // Call native C/C++ function and convert results
         var faceCount: Int32 = 0
         let facesPtr = engine_face_detector_detect_yuv(handler, yuv, width, height, orientation, &faceCount)
         
@@ -127,9 +124,7 @@ class FaceDetector: Component {
             result.append(faceBox)
         }
         
-        // Free the native memory
         engine_face_detector_free_faces(facesPtr)
-        
         return result
     }
 }
@@ -146,7 +141,7 @@ enum FaceDetectorError: Error {
         case .invalidImage:
             return "Invalid image format"
         case .invalidYUVData:
-            return "Invalid YUV data"
+            return "Invalid frame buffer size (expected RGBA)"
         case .nativeHandlerNotInitialized:
             return "Native handler not initialized"
         }
@@ -154,7 +149,6 @@ enum FaceDetectorError: Error {
 }
 
 // MARK: - Native C Function Declarations
-// These should be declared in a bridging header
 
 @_silgen_name("engine_face_detector_allocate")
 func engine_face_detector_allocate() -> UnsafeMutableRawPointer?
